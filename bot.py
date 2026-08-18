@@ -42,9 +42,21 @@ class TonCenterClient:
         return parse_integer(r.json().get("result"))
 
     async def get_balance_micro_usdt(self) -> int:
-        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/wallets", params={"owner_address": WALLET_ADDRESS_RAW, "jetton_master": USDT_MASTER_ADDRESS_RAW}, timeout=30)
-        for w in r.json().get("jetton_wallets", []):
-            if str(w.get("jetton")) == USDT_MASTER_ADDRESS_RAW: return parse_integer(w.get("balance"))
+        url = f"{TONCENTER_V3_API_URL}/jetton/wallets"
+        # Coba RAW dulu
+        params = {"owner_address": WALLET_ADDRESS_RAW, "jetton_master": USDT_MASTER_ADDRESS_RAW}
+        r = await asyncio.to_thread(self.session.get, url, params=params, timeout=30)
+        data = r.json()
+        for w in data.get("jetton_wallets", []):
+            if str(w.get("jetton")) == USDT_MASTER_ADDRESS_RAW: 
+                return parse_integer(w.get("balance"))
+        # Kalau kosong, coba BOUNCEABLE
+        params = {"owner_address": WALLET_ADDRESS, "jetton_master": USDT_MASTER_ADDRESS_RAW}
+        r = await asyncio.to_thread(self.session.get, url, params=params, timeout=30)
+        data = r.json()
+        for w in data.get("jetton_wallets", []):
+            if str(w.get("jetton")) == USDT_MASTER_ADDRESS_RAW: 
+                return parse_integer(w.get("balance"))
         return 0
 
     async def get_last_ton_transaction(self):
@@ -57,12 +69,28 @@ class TonCenterClient:
         return r.json().get("result", [])
 
     async def get_last_usdt_transaction(self):
-        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": WALLET_ADDRESS_RAW, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": 1}, timeout=30)
+        url = f"{TONCENTER_V3_API_URL}/jetton/transfers"
+        # Coba RAW dulu
+        params = {"account": WALLET_ADDRESS_RAW, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": 1}
+        r = await asyncio.to_thread(self.session.get, url, params=params, timeout=30)
+        txs = r.json().get("jetton_transfers", [])
+        if txs: return txs[0]
+        # Kalau kosong, coba BOUNCEABLE
+        params = {"account": WALLET_ADDRESS, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": 1}
+        r = await asyncio.to_thread(self.session.get, url, params=params, timeout=30)
         txs = r.json().get("jetton_transfers", [])
         return txs[0] if txs else None
 
     async def get_usdt_history(self, limit=5):
-        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": WALLET_ADDRESS_RAW, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": limit}, timeout=30)
+        url = f"{TONCENTER_V3_API_URL}/jetton/transfers"
+        # Coba RAW dulu
+        params = {"account": WALLET_ADDRESS_RAW, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": limit}
+        r = await asyncio.to_thread(self.session.get, url, params=params, timeout=30)
+        txs = r.json().get("jetton_transfers", [])
+        if txs: return txs
+        # Kalau kosong, coba BOUNCEABLE
+        params = {"account": WALLET_ADDRESS, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": limit}
+        r = await asyncio.to_thread(self.session.get, url, params=params, timeout=30)
         return r.json().get("jetton_transfers", [])
 
 async def post_init(application: Application) -> None:
@@ -116,7 +144,6 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     text += f"Wallet: {short_addr(WALLET_ADDRESS)}\n"
     text += f"─────────────────\n"
 
-    # Gabungin TON + USDT lalu sort by waktu
     all_txs = []
     for tx in ton_txs:
         all_txs.append({"type": "TON", "time": tx.get("utime", 0), "data": tx})
@@ -150,7 +177,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 sender = data.get("sender", {}).get("address", "")
                 recipient = data.get("recipient", {}).get("address", "")
                 emoji, tipe, addr = "📥", "MASUK", sender
-                if str(recipient) == WALLET_ADDRESS_RAW:
+                if str(recipient) == WALLET_ADDRESS_RAW or str(recipient) == WALLET_ADDRESS:
                     addr = sender
                 else:
                     emoji, tipe, addr = "📤", "KELUAR", recipient
@@ -161,7 +188,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def send_report(context: ContextTypes.DEFAULT_TYPE, ton: int, usdt: int, tipe: str = "PERUBAHAN", tx_info: dict = None):
-    chat_ids = os.getenv("CHAT_ID", "") # support banyak ID pake koma
+    chat_ids = os.getenv("CHAT_ID", "")
     if not chat_ids: return
 
     text = f"🔔 {tipe} SALDO\n"
@@ -170,7 +197,7 @@ async def send_report(context: ContextTypes.DEFAULT_TYPE, ton: int, usdt: int, t
     text += f"💎 TON: {format_ton(ton)}\n"
     text += f"💵 USDT: {format_usdt(usdt)}\n"
 
-    if tx_info: # kalau ada data transaksi
+    if tx_info:
         text += f"─────────────────\n"
         text += f"{tx_info['emoji']} {tx_info['tipe']} {tx_info['amount']} {tx_info['coin']}\n"
         text += f"Alamat: {short_addr(tx_info['address'])}\n"
@@ -194,7 +221,6 @@ async def check_balance(context: ContextTypes.DEFAULT_TYPE):
     tx_info = None
     changed = False
 
-    # 1. CEK PERUBAHAN TON
     if ton!= last_tx["ton"]:
         changed = True
         tx = await client.get_last_ton_transaction()
@@ -211,7 +237,6 @@ async def check_balance(context: ContextTypes.DEFAULT_TYPE):
             tx_info = {"tipe": tipe, "emoji": emoji, "amount": format_ton(value), "coin": "TON", "address": dest, "hash": tx.get("transaction_id", {}).get("hash", ""), "time": time.strftime("%d-%m-%Y %H:%M", time.localtime(tx.get("utime", 0)))}
             last_tx["last_hash_ton"] = tx.get("transaction_id", {}).get("hash", "")
 
-    # 2. CEK PERUBAHAN USDT
     elif usdt!= last_tx["usdt"]:
         changed = True
         tx = await client.get_last_usdt_transaction()
@@ -220,11 +245,10 @@ async def check_balance(context: ContextTypes.DEFAULT_TYPE):
             sender = tx.get("sender", {}).get("address", "")
             recipient = tx.get("recipient", {}).get("address", "")
             tipe, emoji, dest = "MASUK", "📥", sender
-            if str(recipient) == WALLET_ADDRESS_RAW:
+            if str(recipient) == WALLET_ADDRESS_RAW or str(recipient) == WALLET_ADDRESS:
                 tipe, emoji, dest = "MASUK", "📥", sender
-            else: # kita yg kirim
+            else:
                 tipe, emoji, dest = "KELUAR", "📤", recipient
-
             tx_info = {"tipe": tipe, "emoji": emoji, "amount": format_usdt(amount), "coin": "USDT", "address": dest, "hash": tx.get("tx_hash", ""), "time": time.strftime("%d-%m-%Y %H:%M", time.localtime(tx.get("created_at", 0)))}
             last_tx["last_hash_usdt"] = tx.get("tx_hash", "")
 
