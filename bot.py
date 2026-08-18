@@ -2,9 +2,9 @@
 import asyncio, json, logging, os, requests, time
 from decimal import Decimal
 from pathlib import Path
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.error import Forbidden, TelegramError
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
 WALLET_ADDRESS = "UQDSmBRtE-828x5LmsWN7r-aIpfjYEJzCBI2OIiyNunwACT5"
 WALLET_ADDRESS_RAW = "0:D298146D13EF36F31E4B9AC58DEEBF9A2297E36042730812363888B236E9F000"
@@ -16,8 +16,17 @@ USDT_DECIMALS = 6
 DATA_FILE = "last_tx.json"
 logger = logging.getLogger(__name__)
 
+# MENU TOMBOL
+REPLY_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("💼 Info Saldo"), KeyboardButton("📜 Riwayat Transaksi")],
+        [KeyboardButton("🔄 Refresh")]
+    ],
+    resize_keyboard=True
+)
+
 def format_ton(nano_ton: int) -> str: return f"{Decimal(nano_ton) / Decimal(10**NANO_TON):.3f}"
-def format_usdt(micro_usdt: int) -> str: return f"{Decimal(micro_usdt) / Decimal(10**USDT_DECIMALS):.2f}" # ganti ke 2 desimal biar rapi
+def format_usdt(micro_usdt: int) -> str: return f"{Decimal(micro_usdt) / Decimal(10**USDT_DECIMALS):.2f}"
 def parse_integer(value):
     try: return int(str(value))
     except: return 0
@@ -42,11 +51,9 @@ class TonCenterClient:
         return parse_integer(r.json().get("result"))
 
     async def get_balance_micro_usdt(self) -> int:
-        # FIX: BALIK KE V3 + NEMBAK KE WALLET UTAMA BIAR SAMA KAYAK TONVIEWER
         r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/wallets", params={"owner_address": WALLET_ADDRESS, "jetton_master": USDT_MASTER_ADDRESS_RAW}, timeout=30)
         for w in r.json().get("jetton_wallets", []):
-            if str(w.get("jetton")) == USDT_MASTER_ADDRESS_RAW:
-                return parse_integer(w.get("balance"))
+            if str(w.get("jetton")) == USDT_MASTER_ADDRESS_RAW: return parse_integer(w.get("balance"))
         return 0
 
     async def get_last_ton_transaction(self):
@@ -54,18 +61,16 @@ class TonCenterClient:
         txs = r.json().get("result", [])
         return txs[0] if txs else None
 
-    async def get_ton_history(self, limit=5):
+    async def get_ton_history(self, limit=10): # aku naikin jadi 10
         r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V2_API_URL}/getTransactions", params={"address": WALLET_ADDRESS, "limit": limit}, timeout=30)
         return r.json().get("result", [])
 
     async def get_last_usdt_transaction(self):
-        # FIX: BALIK KE V3 + NEMBAK KE WALLET UTAMA
         r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": WALLET_ADDRESS, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": 1}, timeout=30)
         txs = r.json().get("jetton_transfers", [])
         return txs[0] if txs else None
 
-    async def get_usdt_history(self, limit=5):
-        # FIX: BALIK KE V3 + NEMBAK KE WALLET UTAMA
+    async def get_usdt_history(self, limit=10): # aku naikin jadi 10
         r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": WALLET_ADDRESS, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": limit}, timeout=30)
         return r.json().get("jetton_transfers", [])
 
@@ -74,8 +79,8 @@ async def post_init(application: Application) -> None:
     if not ton_api_key: raise RuntimeError("TON_API_KEY belum diatur")
     application.bot_data["ton_client"] = TonCenterClient(ton_api_key)
     application.bot_data["last_tx"] = load_last_tx()
-    application.job_queue.run_repeating(check_balance, interval=300, first=10)
-    application.job_queue.run_repeating(auto_report, interval=3600, first=60)
+    application.job_queue.run_repeating(check_balance, interval=300, first=10) # cek tiap 5 menit masih aktif
+    # application.job_queue.run_repeating(auto_report, interval=3600, first=60) # INI UDAH DIHAPUS
     logger.info("Bot TON + USDT aktif untuk wallet %s", WALLET_ADDRESS)
 
 async def post_shutdown(application: Application) -> None:
@@ -83,40 +88,44 @@ async def post_shutdown(application: Application) -> None:
     if client: client.close()
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    client = context.application.bot_data["ton_client"]
-    ton, usdt = await asyncio.gather(client.get_balance_nano_ton(), client.get_balance_micro_usdt())
     await update.message.reply_text(
-        f"💼 MONITOR WALLET\n"
-        f"─────────────────\n"
-        f"💎 Saldo TON: {format_ton(ton)}\n"
-        f"💵 Saldo USDT: {format_usdt(usdt)}\n"
-        f"─────────────────\n"
-        f"Command: /balance /history"
+        "Bot MONITOR USDT PORTAL Aktif ✅\nPilih menu di bawah:",
+        reply_markup=REPLY_KEYBOARD
     )
+    await balance_command(update, context)
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     client = context.application.bot_data["ton_client"]
+    msg = await update.message.reply_text("⏳ Lagi cek saldo...")
     ton, usdt = await asyncio.gather(client.get_balance_nano_ton(), client.get_balance_micro_usdt())
-    await update.message.reply_text(
-        f"💼 SALDO SAAT INI\n"
+    text = (
+        f"💼 INFO SALDO\n"
         f"─────────────────\n"
         f"💎 TON: {format_ton(ton)}\n"
         f"💵 USDT: {format_usdt(usdt)}\n"
         f"─────────────────\n"
         f"Wallet: {short_addr(WALLET_ADDRESS)}"
     )
+    await msg.edit_text(text, reply_markup=REPLY_KEYBOARD)
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     client = context.application.bot_data["ton_client"]
-    await update.message.reply_text("⏳ Ngambil 5 transaksi terakhir...")
-    ton_txs, usdt_txs = await asyncio.gather(client.get_ton_history(5), client.get_usdt_history(5))
-    text = f"📜 5 RIWAYAT TERAKHIR\nWallet: {short_addr(WALLET_ADDRESS)}\n─────────────────\n"
+    msg = await update.message.reply_text("⏳ Ngambil 10 transaksi terakhir...", reply_markup=REPLY_KEYBOARD)
+
+    ton_txs, usdt_txs = await asyncio.gather(
+        client.get_ton_history(10),
+        client.get_usdt_history(10)
+    )
+
+    text = f"📜 10 RIWAYAT TERAKHIR\nWallet: {short_addr(WALLET_ADDRESS)}\n─────────────────\n"
     all_txs = []
     for tx in ton_txs: all_txs.append({"type": "TON", "time": tx.get("utime", 0), "data": tx})
-    for tx in usdt_txs: all_txs.append({"type": "USDT", "time": tx.get("created_at", 0), "data": tx}) # V3 pake created_at
+    for tx in usdt_txs: all_txs.append({"type": "USDT", "time": tx.get("created_at", 0), "data": tx})
     all_txs.sort(key=lambda x: x["time"], reverse=True)
-    all_txs = all_txs[:5]
-    if not all_txs: text += "Belum ada transaksi"
+    all_txs = all_txs[:10]
+
+    if not all_txs:
+        text += "Belum ada transaksi"
     else:
         for i, tx in enumerate(all_txs, 1):
             if tx["type"] == "TON":
@@ -130,12 +139,18 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 sender = data.get("sender", {}).get("address", "")
                 recipient = data.get("recipient", {}).get("address", "")
                 emoji, tipe, addr = "📥", "MASUK", sender
-                if str(recipient) == WALLET_ADDRESS_RAW:
-                    addr = sender
-                else:
-                    emoji, tipe, addr = "📤", "KELUAR", recipient
+                if str(recipient) == WALLET_ADDRESS_RAW: addr = sender
+                else: emoji, tipe, addr = "📤", "KELUAR", recipient
                 text += f"{i}. {emoji} {tipe} {format_usdt(amount)} USDT\n Ke: {short_addr(addr)}\n {time.strftime('%d-%m %H:%M', time.localtime(tx['time']))}\n\n"
-    await update.message.reply_text(text, parse_mode="Markdown")
+
+    await msg.edit_text(text, parse_mode="Markdown", reply_markup=REPLY_KEYBOARD)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "💼 Info Saldo" or text == "🔄 Refresh":
+        await balance_command(update, context)
+    elif text == "📜 Riwayat Transaksi":
+        await history_command(update, context)
 
 async def send_report(context: ContextTypes.DEFAULT_TYPE, ton: int, usdt: int, tipe: str = "PERUBAHAN", tx_info: dict = None):
     chat_ids = os.getenv("CHAT_ID", "")
@@ -173,11 +188,6 @@ async def check_balance(context: ContextTypes.DEFAULT_TYPE):
         app.bot_data["last_tx"] = {"ton": ton, "usdt": usdt, "last_hash_ton": last_tx["last_hash_ton"], "last_hash_usdt": last_tx["last_hash_usdt"]}
         save_last_tx(app.bot_data["last_tx"])
 
-async def auto_report(context: ContextTypes.DEFAULT_TYPE):
-    app = context.application; client = app.bot_data["ton_client"]
-    ton, usdt = await asyncio.gather(client.get_balance_nano_ton(), client.get_balance_micro_usdt())
-    await send_report(context, ton, usdt, "LAPORAN 1 JAM")
-
 def main() -> None:
     telegram_token = os.getenv("TELEGRAM_TOKEN", "").strip()
     if not telegram_token: raise RuntimeError("TELEGRAM_TOKEN belum diatur")
@@ -185,6 +195,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("history", history_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)) # handler buat tombol
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
