@@ -66,12 +66,13 @@ class TonCenterClient:
         return r.json().get("result", [])
 
     async def get_last_usdt_transaction(self):
-        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": WALLET_ADDRESS, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": 1}, timeout=30)
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/accounts/{WALLET_ADDRESS}/jetton/transfers", params={"limit": 1}, timeout=30)
         txs = r.json().get("jetton_transfers", [])
         return txs[0] if txs else None
 
     async def get_usdt_history(self, limit=10):
-        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": WALLET_ADDRESS, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": limit}, timeout=30)
+        # ENDPOINT BARU BIAR KELUAR MASUK KE BACA SEMUA
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/accounts/{WALLET_ADDRESS}/jetton/transfers", params={"limit": limit}, timeout=30)
         return r.json().get("jetton_transfers", [])
 
 async def post_init(application: Application) -> None:
@@ -79,8 +80,7 @@ async def post_init(application: Application) -> None:
     if not ton_api_key: raise RuntimeError("TON_API_KEY belum diatur")
     application.bot_data["ton_client"] = TonCenterClient(ton_api_key)
     application.bot_data["last_tx"] = load_last_tx()
-    application.job_queue.run_repeating(check_balance, interval=300, first=10) # cek tiap 5 menit
-    # application.job_queue.run_repeating(auto_report, interval=3600, first=60) # NOTIF TIAP JAM DIMATIKAN
+    application.job_queue.run_repeating(check_balance, interval=300, first=10)
     logger.info("Bot TON + USDT aktif untuk wallet %s", WALLET_ADDRESS)
 
 async def post_shutdown(application: Application) -> None:
@@ -96,7 +96,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     client = context.application.bot_data["ton_client"]
-    await update.message.reply_text("⏳ Lagi cek saldo...") # KIRIM BARU JANGAN EDIT
+    await update.message.reply_text("⏳ Lagi cek saldo...")
     ton, usdt = await asyncio.gather(client.get_balance_nano_ton(), client.get_balance_micro_usdt())
     text = (
         f"💼 INFO SALDO\n"
@@ -106,7 +106,7 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"─────────────────\n"
         f"Wallet: {short_addr(WALLET_ADDRESS)}"
     )
-    await update.message.reply_text(text, reply_markup=REPLY_KEYBOARD) # KIRIM BARU
+    await update.message.reply_text(text, reply_markup=REPLY_KEYBOARD)
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     client = context.application.bot_data["ton_client"]
@@ -132,15 +132,22 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 text += f"{i}. {emoji} {tipe} {format_ton(value)} TON\n Ke: {short_addr(addr)}\n {time.strftime('%d-%m %H:%M', time.localtime(tx['time']))}\n\n"
             else:
                 data = tx["data"]
+                # FILTER CUMA USDT
+                if str(data.get("jetton"))!= USDT_MASTER_ADDRESS_RAW:
+                    continue
                 amount = parse_integer(data.get("amount", 0))
                 sender = data.get("sender", {}).get("address", "")
                 recipient = data.get("recipient", {}).get("address", "")
-                emoji, tipe, addr = "📥", "MASUK", sender
-                if str(recipient) == WALLET_ADDRESS_RAW: addr = sender
-                else: emoji, tipe, addr = "📤", "KELUAR", recipient
+
+                # LOGIKA BARU: CEK KITA PENGIRIM ATAU PENERIMA
+                if str(sender) == WALLET_ADDRESS_RAW:
+                    emoji, tipe, addr = "📤", "KELUAR", recipient
+                else:
+                    emoji, tipe, addr = "📥", "MASUK", sender
+
                 text += f"{i}. {emoji} {tipe} {format_usdt(amount)} USDT\n Ke: {short_addr(addr)}\n {time.strftime('%d-%m %H:%M', time.localtime(tx['time']))}\n\n"
 
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=REPLY_KEYBOARD) # KIRIM BARU
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=REPLY_KEYBOARD)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -173,11 +180,12 @@ async def check_balance(context: ContextTypes.DEFAULT_TYPE):
             last_tx["last_hash_ton"] = tx.get("transaction_id", {}).get("hash", "")
     elif usdt!= last_tx["usdt"]:
         changed = True; tx = await client.get_last_usdt_transaction()
-        if tx and tx.get("tx_hash")!= last_tx["last_hash_usdt"]:
+        if tx and tx.get("tx_hash")!= last_tx["last_hash_usdt"] and str(tx.get("jetton")) == USDT_MASTER_ADDRESS_RAW:
             amount = parse_integer(tx.get("amount", 0)); sender = tx.get("sender", {}).get("address", ""); recipient = tx.get("recipient", {}).get("address", "")
-            tipe, emoji, dest = "MASUK", "📥", sender
-            if str(recipient) == WALLET_ADDRESS_RAW: dest = sender
-            else: tipe, emoji, dest = "KELUAR", "📤", recipient
+            if str(sender) == WALLET_ADDRESS_RAW:
+                tipe, emoji, dest = "KELUAR", "📤", recipient
+            else:
+                tipe, emoji, dest = "MASUK", "📥", sender
             tx_info = {"tipe": tipe, "emoji": emoji, "amount": format_usdt(amount), "coin": "USDT", "address": dest, "hash": tx.get("tx_hash", ""), "time": time.strftime("%d-%m-%Y %H:%M", time.localtime(tx.get("created_at", 0)))}
             last_tx["last_hash_usdt"] = tx.get("tx_hash", "")
     if changed:
