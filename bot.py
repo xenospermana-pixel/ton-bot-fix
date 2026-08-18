@@ -13,6 +13,7 @@ TONCENTER_V2_API_URL = "https://toncenter.com/api/v2"
 TONCENTER_V3_API_URL = "https://toncenter.com/api/v3"
 NANO_TON = 9
 USDT_DECIMALS = 6
+DATA_FILE = "last_tx.json"
 logger = logging.getLogger(__name__)
 
 def format_ton(nano_ton: int) -> str: return f"{Decimal(nano_ton) / Decimal(10**NANO_TON):.3f}"
@@ -20,6 +21,14 @@ def format_usdt(micro_usdt: int) -> str: return f"{Decimal(micro_usdt) / Decimal
 def parse_integer(value): 
     try: return int(str(value))
     except: return 0
+
+def load_last_tx():
+    if Path(DATA_FILE).exists():
+        return json.loads(Path(DATA_FILE).read_text())
+    return {"ton": 0, "usdt": 0}
+
+def save_last_tx(data):
+    Path(DATA_FILE).write_text(json.dumps(data))
 
 class TonCenterClient:
     def __init__(self, api_key: str) -> None:
@@ -39,6 +48,9 @@ async def post_init(application: Application) -> None:
     ton_api_key = os.getenv("TON_API_KEY", "").strip()
     if not ton_api_key: raise RuntimeError("TON_API_KEY belum diatur")
     application.bot_data["ton_client"] = TonCenterClient(ton_api_key)
+    application.bot_data["last_tx"] = load_last_tx()
+    application.job_queue.run_repeating(check_balance, interval=300, first=10) # cek tiap 5 menit
+    application.job_queue.run_repeating(auto_report, interval=3600, first=60) # kirim tiap 1 jam
     logger.info("Bot TON + USDT aktif untuk wallet %s", WALLET_ADDRESS)
 
 async def post_shutdown(application: Application) -> None:
@@ -57,6 +69,33 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"─────────────────\n"
         f"Status: Aktif 24 Jam"
     )
+
+async def send_report(context, ton, usdt, tipe="PERUBAHAN"):
+    chat_id = os.getenv("CHAT_ID")
+    if not chat_id: return
+    text = f"🔔 {tipe} SALDO\n"
+    text += f"Wallet: `{WALLET_ADDRESS}`\n"
+    text += f"─────────────────\n"
+    text += f"💎 TON: {format_ton(ton)}\n"
+    text += f"💵 USDT: {format_usdt(usdt)}\n"
+    await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+
+async def check_balance(context: ContextTypes.DEFAULT_TYPE):
+    app = context.application
+    client = app.bot_data["ton_client"]
+    last_tx = app.bot_data["last_tx"]
+    ton, usdt = await asyncio.gather(client.get_balance_nano_ton(), client.get_balance_micro_usdt())
+    
+    if ton != last_tx["ton"] or usdt != last_tx["usdt"]:
+        await send_report(context, ton, usdt, "PERUBAHAN")
+        app.bot_data["last_tx"] = {"ton": ton, "usdt": usdt}
+        save_last_tx(app.bot_data["last_tx"])
+
+async def auto_report(context: ContextTypes.DEFAULT_TYPE):
+    app = context.application
+    client = app.bot_data["ton_client"]
+    ton, usdt = await asyncio.gather(client.get_balance_nano_ton(), client.get_balance_micro_usdt())
+    await send_report(context, ton, usdt, "LAPORAN 1 JAM")
 
 def main() -> None:
     telegram_token = os.getenv("TELEGRAM_TOKEN", "").strip()
