@@ -8,7 +8,7 @@ from telegram.ext import Application, ApplicationBuilder, CommandHandler, Contex
 
 WALLET_ADDRESS = "UQDSmBRtE-828x5LmsWN7r-aIpfjYEJzCBI2OIiyNunwACT5"
 WALLET_ADDRESS_RAW = "0:D298146D13EF36F31E4B9AC58DEEBF9A2297E36042730812363888B236E9F000"
-USDT_MASTER_ADDRESS_RAW = "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"
+USDT_MASTER_ADDRESS_RAW = "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs" # INI ADDRESS USDT KAMU YG BENER
 TONCENTER_V2_API_URL = "https://toncenter.com/api/v2"
 TONCENTER_V3_API_URL = "https://toncenter.com/api/v3"
 NANO_TON = 9
@@ -17,7 +17,7 @@ DATA_FILE = "last_tx.json"
 logger = logging.getLogger(__name__)
 
 def format_ton(nano_ton: int) -> str: return f"{Decimal(nano_ton) / Decimal(10**NANO_TON):.3f}"
-def format_usdt(micro_usdt: int) -> str: return f"{Decimal(micro_usdt) / Decimal(10**USDT_DECIMALS):.3f}"
+def format_usdt(micro_usdt: int) -> str: return f"{Decimal(micro_usdt) / Decimal(10**USDT_DECIMALS):.2f}"
 def parse_integer(value):
     try: return int(str(value))
     except: return 0
@@ -42,21 +42,12 @@ class TonCenterClient:
         return parse_integer(r.json().get("result"))
 
     async def get_balance_micro_usdt(self) -> int:
-        url = f"{TONCENTER_V3_API_URL}/jetton/wallets"
-        # Coba RAW dulu
-        params = {"owner_address": WALLET_ADDRESS_RAW, "jetton_master": USDT_MASTER_ADDRESS_RAW}
-        r = await asyncio.to_thread(self.session.get, url, params=params, timeout=30)
-        data = r.json()
-        for w in data.get("jetton_wallets", []):
-            if str(w.get("jetton")) == USDT_MASTER_ADDRESS_RAW: 
-                return parse_integer(w.get("balance"))
-        # Kalau kosong, coba BOUNCEABLE
-        params = {"owner_address": WALLET_ADDRESS, "jetton_master": USDT_MASTER_ADDRESS_RAW}
-        r = await asyncio.to_thread(self.session.get, url, params=params, timeout=30)
-        data = r.json()
-        for w in data.get("jetton_wallets", []):
-            if str(w.get("jetton")) == USDT_MASTER_ADDRESS_RAW: 
-                return parse_integer(w.get("balance"))
+        # Coba 2 format biar pasti kebaca
+        for addr in [WALLET_ADDRESS_RAW, WALLET_ADDRESS]:
+            r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/wallets", params={"owner_address": addr, "jetton_master": USDT_MASTER_ADDRESS_RAW}, timeout=30)
+            for w in r.json().get("jetton_wallets", []):
+                if str(w.get("jetton")) == USDT_MASTER_ADDRESS_RAW:
+                    return parse_integer(w.get("balance"))
         return 0
 
     async def get_last_ton_transaction(self):
@@ -69,37 +60,26 @@ class TonCenterClient:
         return r.json().get("result", [])
 
     async def get_last_usdt_transaction(self):
-        url = f"{TONCENTER_V3_API_URL}/jetton/transfers"
-        # Coba RAW dulu
-        params = {"account": WALLET_ADDRESS_RAW, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": 1}
-        r = await asyncio.to_thread(self.session.get, url, params=params, timeout=30)
-        txs = r.json().get("jetton_transfers", [])
-        if txs: return txs[0]
-        # Kalau kosong, coba BOUNCEABLE
-        params = {"account": WALLET_ADDRESS, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": 1}
-        r = await asyncio.to_thread(self.session.get, url, params=params, timeout=30)
-        txs = r.json().get("jetton_transfers", [])
-        return txs[0] if txs else None
+        for addr in [WALLET_ADDRESS_RAW, WALLET_ADDRESS]:
+            r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": addr, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": 1}, timeout=30)
+            txs = r.json().get("jetton_transfers", [])
+            if txs: return txs[0]
+        return None
 
     async def get_usdt_history(self, limit=5):
-        url = f"{TONCENTER_V3_API_URL}/jetton/transfers"
-        # Coba RAW dulu
-        params = {"account": WALLET_ADDRESS_RAW, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": limit}
-        r = await asyncio.to_thread(self.session.get, url, params=params, timeout=30)
-        txs = r.json().get("jetton_transfers", [])
-        if txs: return txs
-        # Kalau kosong, coba BOUNCEABLE
-        params = {"account": WALLET_ADDRESS, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": limit}
-        r = await asyncio.to_thread(self.session.get, url, params=params, timeout=30)
-        return r.json().get("jetton_transfers", [])
+        for addr in [WALLET_ADDRESS_RAW, WALLET_ADDRESS]:
+            r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": addr, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": limit}, timeout=30)
+            txs = r.json().get("jetton_transfers", [])
+            if txs: return txs
+        return []
 
 async def post_init(application: Application) -> None:
     ton_api_key = os.getenv("TON_API_KEY", "").strip()
     if not ton_api_key: raise RuntimeError("TON_API_KEY belum diatur")
     application.bot_data["ton_client"] = TonCenterClient(ton_api_key)
     application.bot_data["last_tx"] = load_last_tx()
-    application.job_queue.run_repeating(check_balance, interval=300, first=10) # cek tiap 5 menit
-    application.job_queue.run_repeating(auto_report, interval=3600, first=60) # kirim tiap 1 jam
+    application.job_queue.run_repeating(check_balance, interval=300, first=10)
+    application.job_queue.run_repeating(auto_report, interval=3600, first=60)
     logger.info("Bot TON + USDT aktif untuk wallet %s", WALLET_ADDRESS)
 
 async def post_shutdown(application: Application) -> None:
@@ -107,11 +87,10 @@ async def post_shutdown(application: Application) -> None:
     if client: client.close()
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Bot aktif")
     client = context.application.bot_data["ton_client"]
     ton, usdt = await asyncio.gather(client.get_balance_nano_ton(), client.get_balance_micro_usdt())
     await update.message.reply_text(
-        f"💼 MONITOR WALLET\n"
+        f"💼 MONITOR WALLET AKTIF\n"
         f"─────────────────\n"
         f"💎 Saldo TON: {format_ton(ton)}\n"
         f"💵 Saldo USDT: {format_usdt(usdt)}\n"
@@ -176,9 +155,9 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 amount = parse_integer(data.get("amount", 0))
                 sender = data.get("sender", {}).get("address", "")
                 recipient = data.get("recipient", {}).get("address", "")
-                emoji, tipe, addr = "📥", "MASUK", sender
-                if str(recipient) == WALLET_ADDRESS_RAW or str(recipient) == WALLET_ADDRESS:
-                    addr = sender
+                # FIX: Cek apakah kita yg nerima atau ngirim
+                if WALLET_ADDRESS in str(recipient) or WALLET_ADDRESS_RAW in str(recipient):
+                    emoji, tipe, addr = "📥", "MASUK", sender
                 else:
                     emoji, tipe, addr = "📤", "KELUAR", recipient
                 text += f"{i}. {emoji} {tipe} {format_usdt(amount)} USDT\n"
@@ -244,8 +223,7 @@ async def check_balance(context: ContextTypes.DEFAULT_TYPE):
             amount = parse_integer(tx.get("amount", 0))
             sender = tx.get("sender", {}).get("address", "")
             recipient = tx.get("recipient", {}).get("address", "")
-            tipe, emoji, dest = "MASUK", "📥", sender
-            if str(recipient) == WALLET_ADDRESS_RAW or str(recipient) == WALLET_ADDRESS:
+            if WALLET_ADDRESS in str(recipient) or WALLET_ADDRESS_RAW in str(recipient):
                 tipe, emoji, dest = "MASUK", "📥", sender
             else:
                 tipe, emoji, dest = "KELUAR", "📤", recipient
