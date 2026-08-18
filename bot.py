@@ -7,7 +7,6 @@ from telegram.error import Forbidden, TelegramError
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes
 
 WALLET_ADDRESS = "UQDSmBRtE-828x5LmsWN7r-aIpfjYEJzCBI2OIiyNunwACT5"
-JETTON_WALLET_USDT = "EQAmwNPCaojho0YTS8ZfwnK5zHjduMZeZbeie5dLHeFTAWD7" # INI KUNCINYA DARI SS KAMU
 WALLET_ADDRESS_RAW = "0:D298146D13EF36F31E4B9AC58DEEBF9A2297E36042730812363888B236E9F000"
 USDT_MASTER_ADDRESS_RAW = "0:B113A994B5024A16719F69139328EB759596C38A25F59028B146FECDC3621DFE"
 TONCENTER_V2_API_URL = "https://toncenter.com/api/v2"
@@ -18,7 +17,7 @@ DATA_FILE = "last_tx.json"
 logger = logging.getLogger(__name__)
 
 def format_ton(nano_ton: int) -> str: return f"{Decimal(nano_ton) / Decimal(10**NANO_TON):.3f}"
-def format_usdt(micro_usdt: int) -> str: return f"{Decimal(micro_usdt) / Decimal(10**USDT_DECIMALS):.2f}"
+def format_usdt(micro_usdt: int) -> str: return f"{Decimal(micro_usdt) / Decimal(10**USDT_DECIMALS):.2f}" # ganti ke 2 desimal biar rapi
 def parse_integer(value):
     try: return int(str(value))
     except: return 0
@@ -43,9 +42,12 @@ class TonCenterClient:
         return parse_integer(r.json().get("result"))
 
     async def get_balance_micro_usdt(self) -> int:
-        # FIX: TEMBAK LANGSUNG KE JETTON WALLET PAKE V2
-        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V2_API_URL}/getAddressBalance", params={"address": JETTON_WALLET_USDT}, timeout=30)
-        return parse_integer(r.json().get("result"))
+        # FIX: BALIK KE V3 + NEMBAK KE WALLET UTAMA BIAR SAMA KAYAK TONVIEWER
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/wallets", params={"owner_address": WALLET_ADDRESS, "jetton_master": USDT_MASTER_ADDRESS_RAW}, timeout=30)
+        for w in r.json().get("jetton_wallets", []):
+            if str(w.get("jetton")) == USDT_MASTER_ADDRESS_RAW:
+                return parse_integer(w.get("balance"))
+        return 0
 
     async def get_last_ton_transaction(self):
         r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V2_API_URL}/getTransactions", params={"address": WALLET_ADDRESS, "limit": 1}, timeout=30)
@@ -57,15 +59,15 @@ class TonCenterClient:
         return r.json().get("result", [])
 
     async def get_last_usdt_transaction(self):
-        # FIX: CEK TX DI JETTON WALLET
-        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V2_API_URL}/getTransactions", params={"address": JETTON_WALLET_USDT, "limit": 1}, timeout=30)
-        txs = r.json().get("result", [])
+        # FIX: BALIK KE V3 + NEMBAK KE WALLET UTAMA
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": WALLET_ADDRESS, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": 1}, timeout=30)
+        txs = r.json().get("jetton_transfers", [])
         return txs[0] if txs else None
 
     async def get_usdt_history(self, limit=5):
-        # FIX: CEK TX DI JETTON WALLET
-        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V2_API_URL}/getTransactions", params={"address": JETTON_WALLET_USDT, "limit": limit}, timeout=30)
-        return r.json().get("result", [])
+        # FIX: BALIK KE V3 + NEMBAK KE WALLET UTAMA
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": WALLET_ADDRESS, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": limit}, timeout=30)
+        return r.json().get("jetton_transfers", [])
 
 async def post_init(application: Application) -> None:
     ton_api_key = os.getenv("TON_API_KEY", "").strip()
@@ -111,18 +113,28 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     text = f"📜 5 RIWAYAT TERAKHIR\nWallet: {short_addr(WALLET_ADDRESS)}\n─────────────────\n"
     all_txs = []
     for tx in ton_txs: all_txs.append({"type": "TON", "time": tx.get("utime", 0), "data": tx})
-    for tx in usdt_txs: all_txs.append({"type": "USDT", "time": tx.get("utime", 0), "data": tx})
+    for tx in usdt_txs: all_txs.append({"type": "USDT", "time": tx.get("created_at", 0), "data": tx}) # V3 pake created_at
     all_txs.sort(key=lambda x: x["time"], reverse=True)
     all_txs = all_txs[:5]
     if not all_txs: text += "Belum ada transaksi"
     else:
         for i, tx in enumerate(all_txs, 1):
-            data = tx["data"]; in_msg = data.get("in_msg", {}); out_msgs = data.get("out_msgs", [])
-            value = parse_integer(in_msg.get("value", 0)); addr = in_msg.get("source", ""); emoji, tipe = "📥", "MASUK"
-            if out_msgs: value = parse_integer(out_msgs[0].get("value", 0)); addr = out_msgs[0].get("destination", ""); emoji, tipe = "📤", "KELUAR"
-            coin = "TON" if tx["type"] == "TON" else "USDT"
-            format_func = format_ton if coin == "TON" else format_usdt
-            text += f"{i}. {emoji} {tipe} {format_func(value)} {coin}\n Ke: {short_addr(addr)}\n {time.strftime('%d-%m %H:%M', time.localtime(tx['time']))}\n\n"
+            if tx["type"] == "TON":
+                data = tx["data"]; in_msg = data.get("in_msg", {}); out_msgs = data.get("out_msgs", [])
+                value = parse_integer(in_msg.get("value", 0)); addr = in_msg.get("source", ""); emoji, tipe = "📥", "MASUK"
+                if out_msgs: value = parse_integer(out_msgs[0].get("value", 0)); addr = out_msgs[0].get("destination", ""); emoji, tipe = "📤", "KELUAR"
+                text += f"{i}. {emoji} {tipe} {format_ton(value)} TON\n Ke: {short_addr(addr)}\n {time.strftime('%d-%m %H:%M', time.localtime(tx['time']))}\n\n"
+            else:
+                data = tx["data"]
+                amount = parse_integer(data.get("amount", 0))
+                sender = data.get("sender", {}).get("address", "")
+                recipient = data.get("recipient", {}).get("address", "")
+                emoji, tipe, addr = "📥", "MASUK", sender
+                if str(recipient) == WALLET_ADDRESS_RAW:
+                    addr = sender
+                else:
+                    emoji, tipe, addr = "📤", "KELUAR", recipient
+                text += f"{i}. {emoji} {tipe} {format_usdt(amount)} USDT\n Ke: {short_addr(addr)}\n {time.strftime('%d-%m %H:%M', time.localtime(tx['time']))}\n\n"
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def send_report(context: ContextTypes.DEFAULT_TYPE, ton: int, usdt: int, tipe: str = "PERUBAHAN", tx_info: dict = None):
@@ -149,11 +161,13 @@ async def check_balance(context: ContextTypes.DEFAULT_TYPE):
             last_tx["last_hash_ton"] = tx.get("transaction_id", {}).get("hash", "")
     elif usdt!= last_tx["usdt"]:
         changed = True; tx = await client.get_last_usdt_transaction()
-        if tx and tx.get("transaction_id", {}).get("hash")!= last_tx["last_hash_usdt"]:
-            in_msg = tx.get("in_msg", {}); out_msgs = tx.get("out_msgs", []); value = parse_integer(in_msg.get("value", 0)); dest = in_msg.get("source", ""); tipe, emoji = "MASUK", "📥"
-            if out_msgs: value = parse_integer(out_msgs[0].get("value", 0)); dest = out_msgs[0].get("destination", ""); tipe, emoji = "KELUAR", "📤"
-            tx_info = {"tipe": tipe, "emoji": emoji, "amount": format_usdt(value), "coin": "USDT", "address": dest, "hash": tx.get("transaction_id", {}).get("hash", ""), "time": time.strftime("%d-%m-%Y %H:%M", time.localtime(tx.get("utime", 0)))}
-            last_tx["last_hash_usdt"] = tx.get("transaction_id", {}).get("hash", "")
+        if tx and tx.get("tx_hash")!= last_tx["last_hash_usdt"]:
+            amount = parse_integer(tx.get("amount", 0)); sender = tx.get("sender", {}).get("address", ""); recipient = tx.get("recipient", {}).get("address", "")
+            tipe, emoji, dest = "MASUK", "📥", sender
+            if str(recipient) == WALLET_ADDRESS_RAW: dest = sender
+            else: tipe, emoji, dest = "KELUAR", "📤", recipient
+            tx_info = {"tipe": tipe, "emoji": emoji, "amount": format_usdt(amount), "coin": "USDT", "address": dest, "hash": tx.get("tx_hash", ""), "time": time.strftime("%d-%m-%Y %H:%M", time.localtime(tx.get("created_at", 0)))}
+            last_tx["last_hash_usdt"] = tx.get("tx_hash", "")
     if changed:
         await send_report(context, ton, usdt, "PERUBAHAN", tx_info)
         app.bot_data["last_tx"] = {"ton": ton, "usdt": usdt, "last_hash_ton": last_tx["last_hash_ton"], "last_hash_usdt": last_tx["last_hash_usdt"]}
