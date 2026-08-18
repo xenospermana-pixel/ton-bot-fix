@@ -61,7 +61,7 @@ class TonCenterClient:
         txs = r.json().get("result", [])
         return txs[0] if txs else None
 
-    async def get_ton_history(self, limit=10): # aku naikin jadi 10
+    async def get_ton_history(self, limit=10):
         r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V2_API_URL}/getTransactions", params={"address": WALLET_ADDRESS, "limit": limit}, timeout=30)
         return r.json().get("result", [])
 
@@ -70,7 +70,7 @@ class TonCenterClient:
         txs = r.json().get("jetton_transfers", [])
         return txs[0] if txs else None
 
-    async def get_usdt_history(self, limit=10): # aku naikin jadi 10
+    async def get_usdt_history(self, limit=10):
         r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": WALLET_ADDRESS, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": limit}, timeout=30)
         return r.json().get("jetton_transfers", [])
 
@@ -79,8 +79,8 @@ async def post_init(application: Application) -> None:
     if not ton_api_key: raise RuntimeError("TON_API_KEY belum diatur")
     application.bot_data["ton_client"] = TonCenterClient(ton_api_key)
     application.bot_data["last_tx"] = load_last_tx()
-    application.job_queue.run_repeating(check_balance, interval=300, first=10) # cek tiap 5 menit masih aktif
-    # application.job_queue.run_repeating(auto_report, interval=3600, first=60) # INI UDAH DIHAPUS
+    application.job_queue.run_repeating(check_balance, interval=300, first=10) # cek tiap 5 menit
+    # application.job_queue.run_repeating(auto_report, interval=3600, first=60) # NOTIF TIAP JAM DIMATIKAN
     logger.info("Bot TON + USDT aktif untuk wallet %s", WALLET_ADDRESS)
 
 async def post_shutdown(application: Application) -> None:
@@ -96,7 +96,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     client = context.application.bot_data["ton_client"]
-    msg = await update.message.reply_text("⏳ Lagi cek saldo...")
+    await update.message.reply_text("⏳ Lagi cek saldo...") # KIRIM BARU JANGAN EDIT
     ton, usdt = await asyncio.gather(client.get_balance_nano_ton(), client.get_balance_micro_usdt())
     text = (
         f"💼 INFO SALDO\n"
@@ -106,16 +106,13 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"─────────────────\n"
         f"Wallet: {short_addr(WALLET_ADDRESS)}"
     )
-    await msg.edit_text(text, reply_markup=REPLY_KEYBOARD)
+    await update.message.reply_text(text, reply_markup=REPLY_KEYBOARD) # KIRIM BARU
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     client = context.application.bot_data["ton_client"]
-    msg = await update.message.reply_text("⏳ Ngambil 10 transaksi terakhir...", reply_markup=REPLY_KEYBOARD)
+    await update.message.reply_text("⏳ Ngambil 10 transaksi terakhir...", reply_markup=REPLY_KEYBOARD)
 
-    ton_txs, usdt_txs = await asyncio.gather(
-        client.get_ton_history(10),
-        client.get_usdt_history(10)
-    )
+    ton_txs, usdt_txs = await asyncio.gather(client.get_ton_history(10), client.get_usdt_history(10))
 
     text = f"📜 10 RIWAYAT TERAKHIR\nWallet: {short_addr(WALLET_ADDRESS)}\n─────────────────\n"
     all_txs = []
@@ -143,7 +140,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 else: emoji, tipe, addr = "📤", "KELUAR", recipient
                 text += f"{i}. {emoji} {tipe} {format_usdt(amount)} USDT\n Ke: {short_addr(addr)}\n {time.strftime('%d-%m %H:%M', time.localtime(tx['time']))}\n\n"
 
-    await msg.edit_text(text, parse_mode="Markdown", reply_markup=REPLY_KEYBOARD)
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=REPLY_KEYBOARD) # KIRIM BARU
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -195,7 +192,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("history", history_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)) # handler buat tombol
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
