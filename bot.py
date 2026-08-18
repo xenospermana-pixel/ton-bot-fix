@@ -3,11 +3,11 @@ import asyncio, json, logging, os, requests, time
 from decimal import Decimal
 from pathlib import Path
 from telegram import Update
+from telegram.error import Forbidden, TelegramError
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes
 
-HOLDER_ADDRESS = "UQDSmBRtE-828x5LmsWN7r-aIpfjYEJzCBI2OIiyNunwACT5"
-JETTON_WALLET_USDT = "EQAmwNPCaojho0YTS8ZfwnK5zHjduMZeZbeie5dLHeFTAWD7"
-USDT_MASTER_ADDRESS = "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"
+WALLET_ADDRESS = "UQDSmBRtE-828x5LmsWN7r-aIpfjYEJzCBI2OIiyNunwACT5"
+USDT_MASTER_ADDRESS = "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs" # address USDT yg bener
 TONAPI_URL = "https://tonapi.io/v2"
 NANO_TON = 9
 USDT_DECIMALS = 6
@@ -35,22 +35,40 @@ class TonClient:
     def close(self) -> None: self.session.close()
 
     async def get_balance_nano_ton(self) -> int:
-        r = await asyncio.to_thread(self.session.get, f"{TONAPI_URL}/account/{HOLDER_ADDRESS}", timeout=30)
+        r = await asyncio.to_thread(self.session.get, f"{TONAPI_URL}/account/{WALLET_ADDRESS}", timeout=30)
         return parse_integer(r.json().get("balance"))
 
     async def get_balance_micro_usdt(self) -> int:
-        r = await asyncio.to_thread(self.session.get, f"{TONAPI_URL}/account/{HOLDER_ADDRESS}/jettons", timeout=30)
+        r = await asyncio.to_thread(self.session.get, f"{TONAPI_URL}/account/{WALLET_ADDRESS}/jettons", timeout=30)
         for j in r.json().get("balances", []):
             if j.get("jetton", {}).get("address") == USDT_MASTER_ADDRESS:
                 return parse_integer(j.get("balance"))
         return 0
 
+    async def get_last_ton_transaction(self):
+        r = await asyncio.to_thread(self.session.get, f"{TONAPI_URL}/account/{WALLET_ADDRESS}/transactions", params={"limit": 1}, timeout=30)
+        txs = r.json().get("transactions", [])
+        return txs[0] if txs else None
+
+    async def get_ton_history(self, limit=5):
+        r = await asyncio.to_thread(self.session.get, f"{TONAPI_URL}/account/{WALLET_ADDRESS}/transactions", params={"limit": limit}, timeout=30)
+        return r.json().get("transactions", [])
+
+    async def get_last_usdt_transaction(self):
+        r = await asyncio.to_thread(self.session.get, f"{TONAPI_URL}/account/{WALLET_ADDRESS}/jettons/{USDT_MASTER_ADDRESS}/transactions", params={"limit": 1}, timeout=30)
+        txs = r.json().get("transactions", [])
+        return txs[0] if txs else None
+
+    async def get_usdt_history(self, limit=5):
+        r = await asyncio.to_thread(self.session.get, f"{TONAPI_URL}/account/{WALLET_ADDRESS}/jettons/{USDT_MASTER_ADDRESS}/transactions", params={"limit": limit}, timeout=30)
+        return r.json().get("transactions", [])
+
 async def post_init(application: Application) -> None:
-    application.bot_data["ton_client"] = TonClient()
+    application.bot_data["ton_client"] = TonClient() # GA PAKE API KEY LAGI
     application.bot_data["last_tx"] = load_last_tx()
     application.job_queue.run_repeating(check_balance, interval=300, first=10)
     application.job_queue.run_repeating(auto_report, interval=3600, first=60)
-    logger.info("Bot TON + USDT aktif untuk wallet %s", HOLDER_ADDRESS)
+    logger.info("Bot TON + USDT aktif untuk wallet %s", WALLET_ADDRESS)
 
 async def post_shutdown(application: Application) -> None:
     client = application.bot_data.get("ton_client")
@@ -59,20 +77,53 @@ async def post_shutdown(application: Application) -> None:
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     client = context.application.bot_data["ton_client"]
     ton, usdt = await asyncio.gather(client.get_balance_nano_ton(), client.get_balance_micro_usdt())
-    await update.message.reply_text(f"💼 MONITOR WALLET AKTIF\n─────────────────\n💎 Saldo TON: {format_ton(ton)}\n💵 Saldo USDT: {format_usdt(usdt)}\n─────────────────\nCommand: /balance /history")
+    await update.message.reply_text(
+        f"💼 MONITOR WALLET AKTIF\n"
+        f"─────────────────\n"
+        f"💎 Saldo TON: {format_ton(ton)}\n"
+        f"💵 Saldo USDT: {format_usdt(usdt)}\n"
+        f"─────────────────\n"
+        f"Command: /balance /history"
+    )
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     client = context.application.bot_data["ton_client"]
     ton, usdt = await asyncio.gather(client.get_balance_nano_ton(), client.get_balance_micro_usdt())
-    await update.message.reply_text(f"💼 SALDO SAAT INI\n─────────────────\n💎 TON: {format_ton(ton)}\n💵 USDT: {format_usdt(usdt)}\n─────────────────\nWallet: {short_addr(HOLDER_ADDRESS)}")
+    await update.message.reply_text(
+        f"💼 SALDO SAAT INI\n"
+        f"─────────────────\n"
+        f"💎 TON: {format_ton(ton)}\n"
+        f"💵 USDT: {format_usdt(usdt)}\n"
+        f"─────────────────\n"
+        f"Wallet: {short_addr(WALLET_ADDRESS)}"
+    )
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Fitur history dinonaktifkan sementara buat ngetes balance")
+    client = context.application.bot_data["ton_client"]
+    await update.message.reply_text("⏳ Ngambil 5 transaksi terakhir...")
+    ton_txs, usdt_txs = await asyncio.gather(client.get_ton_history(5), client.get_usdt_history(5))
+    text = f"📜 5 RIWAYAT TERAKHIR\nWallet: {short_addr(WALLET_ADDRESS)}\n─────────────────\n"
+    all_txs = []
+    for tx in ton_txs: all_txs.append({"type": "TON", "time": tx.get("utime", 0), "data": tx})
+    for tx in usdt_txs: all_txs.append({"type": "USDT", "time": tx.get("utime", 0), "data": tx})
+    all_txs.sort(key=lambda x: x["time"], reverse=True)
+    all_txs = all_txs[:5]
+    if not all_txs: text += "Belum ada transaksi"
+    else:
+        for i, tx in enumerate(all_txs, 1):
+            data = tx["data"]; in_msg = data.get("in_msg", {}); out_msgs = data.get("out_msgs", [])
+            value = parse_integer(in_msg.get("value", 0)); addr = in_msg.get("source", ""); emoji, tipe = "📥", "MASUK"
+            if out_msgs: value = parse_integer(out_msgs[0].get("value", 0)); addr = out_msgs[0].get("destination", ""); emoji, tipe = "📤", "KELUAR"
+            coin = "TON" if tx["type"] == "TON" else "USDT"
+            format_func = format_ton if coin == "TON" else format_usdt
+            text += f"{i}. {emoji} {tipe} {format_func(value)} {coin}\n Ke: {short_addr(addr)}\n {time.strftime('%d-%m %H:%M', time.localtime(tx['time']))}\n\n"
+    await update.message.reply_text(text, parse_mode="Markdown")
 
-async def send_report(context: ContextTypes.DEFAULT_TYPE, ton: int, usdt: int, tipe: str = "PERUBAHAN"):
+async def send_report(context: ContextTypes.DEFAULT_TYPE, ton: int, usdt: int, tipe: str = "PERUBAHAN", tx_info: dict = None):
     chat_ids = os.getenv("CHAT_ID", "")
     if not chat_ids: return
-    text = f"🔔 {tipe} SALDO\nWallet: {short_addr(HOLDER_ADDRESS)}\n─────────────────\n💎 TON: {format_ton(ton)}\n💵 USDT: {format_usdt(usdt)}\n"
+    text = f"🔔 {tipe} SALDO\nWallet: {short_addr(WALLET_ADDRESS)}\n─────────────────\n💎 TON: {format_ton(ton)}\n💵 USDT: {format_usdt(usdt)}\n"
+    if tx_info: text += f"─────────────────\n{tx_info['emoji']} {tx_info['tipe']} {tx_info['amount']} {tx_info['coin']}\nAlamat: {short_addr(tx_info['address'])}\nHash: `{tx_info['hash'][:8]}...{tx_info['hash'][-6:]}`\nWaktu: {tx_info['time']}"
     for chat_id in chat_ids.split(","):
         chat_id = chat_id.strip()
         if chat_id:
@@ -82,9 +133,24 @@ async def send_report(context: ContextTypes.DEFAULT_TYPE, ton: int, usdt: int, t
 async def check_balance(context: ContextTypes.DEFAULT_TYPE):
     app = context.application; client = app.bot_data["ton_client"]; last_tx = app.bot_data["last_tx"]
     ton, usdt = await asyncio.gather(client.get_balance_nano_ton(), client.get_balance_micro_usdt())
-    if ton!= last_tx["ton"] or usdt!= last_tx["usdt"]:
-        await send_report(context, ton, usdt, "PERUBAHAN")
-        app.bot_data["last_tx"] = {"ton": ton, "usdt": usdt, "last_hash_ton": "", "last_hash_usdt": ""}
+    tx_info = None; changed = False
+    if ton!= last_tx["ton"]:
+        changed = True; tx = await client.get_last_ton_transaction()
+        if tx and tx.get("hash")!= last_tx["last_hash_ton"]:
+            in_msg = tx.get("in_msg", {}); out_msgs = tx.get("out_msgs", []); value = parse_integer(in_msg.get("value", 0)); dest = in_msg.get("source", ""); tipe, emoji = "MASUK", "📥"
+            if out_msgs: value = parse_integer(out_msgs[0].get("value", 0)); dest = out_msgs[0].get("destination", ""); tipe, emoji = "KELUAR", "📤"
+            tx_info = {"tipe": tipe, "emoji": emoji, "amount": format_ton(value), "coin": "TON", "address": dest, "hash": tx.get("hash", ""), "time": time.strftime("%d-%m-%Y %H:%M", time.localtime(tx.get("utime", 0)))}
+            last_tx["last_hash_ton"] = tx.get("hash", "")
+    elif usdt!= last_tx["usdt"]:
+        changed = True; tx = await client.get_last_usdt_transaction()
+        if tx and tx.get("hash")!= last_tx["last_hash_usdt"]:
+            in_msg = tx.get("in_msg", {}); out_msgs = tx.get("out_msgs", []); value = parse_integer(in_msg.get("value", 0)); dest = in_msg.get("source", ""); tipe, emoji = "MASUK", "📥"
+            if out_msgs: value = parse_integer(out_msgs[0].get("value", 0)); dest = out_msgs[0].get("destination", ""); tipe, emoji = "KELUAR", "📤"
+            tx_info = {"tipe": tipe, "emoji": emoji, "amount": format_usdt(value), "coin": "USDT", "address": dest, "hash": tx.get("hash", ""), "time": time.strftime("%d-%m-%Y %H:%M", time.localtime(tx.get("utime", 0)))}
+            last_tx["last_hash_usdt"] = tx.get("hash", "")
+    if changed:
+        await send_report(context, ton, usdt, "PERUBAHAN", tx_info)
+        app.bot_data["last_tx"] = {"ton": ton, "usdt": usdt, "last_hash_ton": last_tx["last_hash_ton"], "last_hash_usdt": last_tx["last_hash_usdt"]}
         save_last_tx(app.bot_data["last_tx"])
 
 async def auto_report(context: ContextTypes.DEFAULT_TYPE):
