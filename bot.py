@@ -619,7 +619,6 @@ def main() -> None:
         raise RuntimeError("Secret TELEGRAM_TOKEN belum diatur")
 
         app = ApplicationBuilder().token(telegram_token).post_init(post_init).post_shutdown(post_shutdown).build()
-    
     app.add_handler(CommandHandler("start", start_command))
     
     logger.info("Bot TON + USDT aktif untuk wallet %s", WALLET_ADDRESS)
