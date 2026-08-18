@@ -7,8 +7,7 @@ from telegram.error import Forbidden, TelegramError
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes
 
 WALLET_ADDRESS = "UQDSmBRtE-828x5LmsWN7r-aIpfjYEJzCBI2OIiyNunwACT5"
-WALLET_ADDRESS_RAW = "0:D298146D13EF36F31E4B9AC58DEEBF9A2297E36042730812363888B236E9F000"
-USDT_MASTER_ADDRESS_RAW = "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs" # INI ADDRESS USDT KAMU YG BENER
+USDT_MASTER_ADDRESS_RAW = "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"
 TONCENTER_V2_API_URL = "https://toncenter.com/api/v2"
 TONCENTER_V3_API_URL = "https://toncenter.com/api/v3"
 NANO_TON = 9
@@ -42,12 +41,10 @@ class TonCenterClient:
         return parse_integer(r.json().get("result"))
 
     async def get_balance_micro_usdt(self) -> int:
-        # Coba 2 format biar pasti kebaca
-        for addr in [WALLET_ADDRESS_RAW, WALLET_ADDRESS]:
-            r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/wallets", params={"owner_address": addr, "jetton_master": USDT_MASTER_ADDRESS_RAW}, timeout=30)
-            for w in r.json().get("jetton_wallets", []):
-                if str(w.get("jetton")) == USDT_MASTER_ADDRESS_RAW:
-                    return parse_integer(w.get("balance"))
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/wallets", params={"owner_address": WALLET_ADDRESS, "jetton_master": USDT_MASTER_ADDRESS_RAW}, timeout=30)
+        for w in r.json().get("jetton_wallets", []):
+            if str(w.get("jetton")) == USDT_MASTER_ADDRESS_RAW:
+                return parse_integer(w.get("balance"))
         return 0
 
     async def get_last_ton_transaction(self):
@@ -60,18 +57,13 @@ class TonCenterClient:
         return r.json().get("result", [])
 
     async def get_last_usdt_transaction(self):
-        for addr in [WALLET_ADDRESS_RAW, WALLET_ADDRESS]:
-            r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": addr, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": 1}, timeout=30)
-            txs = r.json().get("jetton_transfers", [])
-            if txs: return txs[0]
-        return None
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": WALLET_ADDRESS, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": 1}, timeout=30)
+        txs = r.json().get("jetton_transfers", [])
+        return txs[0] if txs else None
 
     async def get_usdt_history(self, limit=5):
-        for addr in [WALLET_ADDRESS_RAW, WALLET_ADDRESS]:
-            r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": addr, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": limit}, timeout=30)
-            txs = r.json().get("jetton_transfers", [])
-            if txs: return txs
-        return []
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": WALLET_ADDRESS, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": limit}, timeout=30)
+        return r.json().get("jetton_transfers", [])
 
 async def post_init(application: Application) -> None:
     ton_api_key = os.getenv("TON_API_KEY", "").strip()
@@ -155,8 +147,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 amount = parse_integer(data.get("amount", 0))
                 sender = data.get("sender", {}).get("address", "")
                 recipient = data.get("recipient", {}).get("address", "")
-                # FIX: Cek apakah kita yg nerima atau ngirim
-                if WALLET_ADDRESS in str(recipient) or WALLET_ADDRESS_RAW in str(recipient):
+                if WALLET_ADDRESS in str(recipient):
                     emoji, tipe, addr = "📥", "MASUK", sender
                 else:
                     emoji, tipe, addr = "📤", "KELUAR", recipient
@@ -223,7 +214,7 @@ async def check_balance(context: ContextTypes.DEFAULT_TYPE):
             amount = parse_integer(tx.get("amount", 0))
             sender = tx.get("sender", {}).get("address", "")
             recipient = tx.get("recipient", {}).get("address", "")
-            if WALLET_ADDRESS in str(recipient) or WALLET_ADDRESS_RAW in str(recipient):
+            if WALLET_ADDRESS in str(recipient):
                 tipe, emoji, dest = "MASUK", "📥", sender
             else:
                 tipe, emoji, dest = "KELUAR", "📤", recipient
