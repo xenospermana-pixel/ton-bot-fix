@@ -70,15 +70,22 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"Status: Aktif 24 Jam"
     )
 
-async def send_report(context, ton, usdt, tipe="PERUBAHAN"):
-    chat_id = os.getenv("CHAT_ID")
-    if not chat_id: return
+async def send_report(context: ContextTypes.DEFAULT_TYPE, ton: int, usdt: int, tipe: str = "PERUBAHAN"):
+    chat_ids = os.getenv("CHAT_ID", "") # support banyak ID pake koma
+    if not chat_ids: return
     text = f"🔔 {tipe} SALDO\n"
     text += f"Wallet: `{WALLET_ADDRESS}`\n"
     text += f"─────────────────\n"
     text += f"💎 TON: {format_ton(ton)}\n"
     text += f"💵 USDT: {format_usdt(usdt)}\n"
-    await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+    
+    for chat_id in chat_ids.split(","):
+        chat_id = chat_id.strip()
+        if chat_id:
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+            except Exception as e:
+                logger.error(f"Gagal kirim ke {chat_id}: {e}")
 
 async def check_balance(context: ContextTypes.DEFAULT_TYPE):
     app = context.application
