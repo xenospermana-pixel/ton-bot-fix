@@ -7,8 +7,11 @@ from telegram.error import Forbidden, TelegramError
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes
 
 WALLET_ADDRESS = "UQDSmBRtE-828x5LmsWN7r-aIpfjYEJzCBI2OIiyNunwACT5"
-USDT_MASTER_ADDRESS = "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs" # address USDT yg bener
-TONAPI_URL = "https://tonapi.io/v2"
+JETTON_WALLET_USDT = "EQAmwNPCaojho0YTS8ZfwnK5zHjduMZeZbeie5dLHeFTAWD7" # INI KUNCINYA DARI SS KAMU
+WALLET_ADDRESS_RAW = "0:D298146D13EF36F31E4B9AC58DEEBF9A2297E36042730812363888B236E9F000"
+USDT_MASTER_ADDRESS_RAW = "0:B113A994B5024A16719F69139328EB759596C38A25F59028B146FECDC3621DFE"
+TONCENTER_V2_API_URL = "https://toncenter.com/api/v2"
+TONCENTER_V3_API_URL = "https://toncenter.com/api/v3"
 NANO_TON = 9
 USDT_DECIMALS = 6
 DATA_FILE = "last_tx.json"
@@ -29,42 +32,45 @@ def load_last_tx():
 def save_last_tx(data):
     Path(DATA_FILE).write_text(json.dumps(data))
 
-class TonClient:
-    def __init__(self) -> None:
+class TonCenterClient:
+    def __init__(self, api_key: str) -> None:
         self.session = requests.Session()
+        self.session.headers.update({"X-API-Key": api_key})
     def close(self) -> None: self.session.close()
 
     async def get_balance_nano_ton(self) -> int:
-        r = await asyncio.to_thread(self.session.get, f"{TONAPI_URL}/account/{WALLET_ADDRESS}", timeout=30)
-        return parse_integer(r.json().get("balance"))
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V2_API_URL}/getAddressBalance", params={"address": WALLET_ADDRESS}, timeout=30)
+        return parse_integer(r.json().get("result"))
 
     async def get_balance_micro_usdt(self) -> int:
-        r = await asyncio.to_thread(self.session.get, f"{TONAPI_URL}/account/{WALLET_ADDRESS}/jettons", timeout=30)
-        for j in r.json().get("balances", []):
-            if j.get("jetton", {}).get("address") == USDT_MASTER_ADDRESS:
-                return parse_integer(j.get("balance"))
-        return 0
+        # FIX: TEMBAK LANGSUNG KE JETTON WALLET PAKE V2
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V2_API_URL}/getAddressBalance", params={"address": JETTON_WALLET_USDT}, timeout=30)
+        return parse_integer(r.json().get("result"))
 
     async def get_last_ton_transaction(self):
-        r = await asyncio.to_thread(self.session.get, f"{TONAPI_URL}/account/{WALLET_ADDRESS}/transactions", params={"limit": 1}, timeout=30)
-        txs = r.json().get("transactions", [])
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V2_API_URL}/getTransactions", params={"address": WALLET_ADDRESS, "limit": 1}, timeout=30)
+        txs = r.json().get("result", [])
         return txs[0] if txs else None
 
     async def get_ton_history(self, limit=5):
-        r = await asyncio.to_thread(self.session.get, f"{TONAPI_URL}/account/{WALLET_ADDRESS}/transactions", params={"limit": limit}, timeout=30)
-        return r.json().get("transactions", [])
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V2_API_URL}/getTransactions", params={"address": WALLET_ADDRESS, "limit": limit}, timeout=30)
+        return r.json().get("result", [])
 
     async def get_last_usdt_transaction(self):
-        r = await asyncio.to_thread(self.session.get, f"{TONAPI_URL}/account/{WALLET_ADDRESS}/jettons/{USDT_MASTER_ADDRESS}/transactions", params={"limit": 1}, timeout=30)
-        txs = r.json().get("transactions", [])
+        # FIX: CEK TX DI JETTON WALLET
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V2_API_URL}/getTransactions", params={"address": JETTON_WALLET_USDT, "limit": 1}, timeout=30)
+        txs = r.json().get("result", [])
         return txs[0] if txs else None
 
     async def get_usdt_history(self, limit=5):
-        r = await asyncio.to_thread(self.session.get, f"{TONAPI_URL}/account/{WALLET_ADDRESS}/jettons/{USDT_MASTER_ADDRESS}/transactions", params={"limit": limit}, timeout=30)
-        return r.json().get("transactions", [])
+        # FIX: CEK TX DI JETTON WALLET
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V2_API_URL}/getTransactions", params={"address": JETTON_WALLET_USDT, "limit": limit}, timeout=30)
+        return r.json().get("result", [])
 
 async def post_init(application: Application) -> None:
-    application.bot_data["ton_client"] = TonClient() # GA PAKE API KEY LAGI
+    ton_api_key = os.getenv("TON_API_KEY", "").strip()
+    if not ton_api_key: raise RuntimeError("TON_API_KEY belum diatur")
+    application.bot_data["ton_client"] = TonCenterClient(ton_api_key)
     application.bot_data["last_tx"] = load_last_tx()
     application.job_queue.run_repeating(check_balance, interval=300, first=10)
     application.job_queue.run_repeating(auto_report, interval=3600, first=60)
@@ -78,7 +84,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     client = context.application.bot_data["ton_client"]
     ton, usdt = await asyncio.gather(client.get_balance_nano_ton(), client.get_balance_micro_usdt())
     await update.message.reply_text(
-        f"💼 MONITOR WALLET AKTIF\n"
+        f"💼 MONITOR WALLET\n"
         f"─────────────────\n"
         f"💎 Saldo TON: {format_ton(ton)}\n"
         f"💵 Saldo USDT: {format_usdt(usdt)}\n"
@@ -136,18 +142,18 @@ async def check_balance(context: ContextTypes.DEFAULT_TYPE):
     tx_info = None; changed = False
     if ton!= last_tx["ton"]:
         changed = True; tx = await client.get_last_ton_transaction()
-        if tx and tx.get("hash")!= last_tx["last_hash_ton"]:
+        if tx and tx.get("transaction_id", {}).get("hash")!= last_tx["last_hash_ton"]:
             in_msg = tx.get("in_msg", {}); out_msgs = tx.get("out_msgs", []); value = parse_integer(in_msg.get("value", 0)); dest = in_msg.get("source", ""); tipe, emoji = "MASUK", "📥"
             if out_msgs: value = parse_integer(out_msgs[0].get("value", 0)); dest = out_msgs[0].get("destination", ""); tipe, emoji = "KELUAR", "📤"
-            tx_info = {"tipe": tipe, "emoji": emoji, "amount": format_ton(value), "coin": "TON", "address": dest, "hash": tx.get("hash", ""), "time": time.strftime("%d-%m-%Y %H:%M", time.localtime(tx.get("utime", 0)))}
-            last_tx["last_hash_ton"] = tx.get("hash", "")
+            tx_info = {"tipe": tipe, "emoji": emoji, "amount": format_ton(value), "coin": "TON", "address": dest, "hash": tx.get("transaction_id", {}).get("hash", ""), "time": time.strftime("%d-%m-%Y %H:%M", time.localtime(tx.get("utime", 0)))}
+            last_tx["last_hash_ton"] = tx.get("transaction_id", {}).get("hash", "")
     elif usdt!= last_tx["usdt"]:
         changed = True; tx = await client.get_last_usdt_transaction()
-        if tx and tx.get("hash")!= last_tx["last_hash_usdt"]:
+        if tx and tx.get("transaction_id", {}).get("hash")!= last_tx["last_hash_usdt"]:
             in_msg = tx.get("in_msg", {}); out_msgs = tx.get("out_msgs", []); value = parse_integer(in_msg.get("value", 0)); dest = in_msg.get("source", ""); tipe, emoji = "MASUK", "📥"
             if out_msgs: value = parse_integer(out_msgs[0].get("value", 0)); dest = out_msgs[0].get("destination", ""); tipe, emoji = "KELUAR", "📤"
-            tx_info = {"tipe": tipe, "emoji": emoji, "amount": format_usdt(value), "coin": "USDT", "address": dest, "hash": tx.get("hash", ""), "time": time.strftime("%d-%m-%Y %H:%M", time.localtime(tx.get("utime", 0)))}
-            last_tx["last_hash_usdt"] = tx.get("hash", "")
+            tx_info = {"tipe": tipe, "emoji": emoji, "amount": format_usdt(value), "coin": "USDT", "address": dest, "hash": tx.get("transaction_id", {}).get("hash", ""), "time": time.strftime("%d-%m-%Y %H:%M", time.localtime(tx.get("utime", 0)))}
+            last_tx["last_hash_usdt"] = tx.get("transaction_id", {}).get("hash", "")
     if changed:
         await send_report(context, ton, usdt, "PERUBAHAN", tx_info)
         app.bot_data["last_tx"] = {"ton": ton, "usdt": usdt, "last_hash_ton": last_tx["last_hash_ton"], "last_hash_usdt": last_tx["last_hash_usdt"]}
