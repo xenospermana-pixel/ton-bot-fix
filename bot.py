@@ -42,7 +42,7 @@ class TonCenterClient:
         return parse_integer(r.json().get("result"))
 
     async def get_balance_micro_usdt(self) -> int:
-        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/wallets", params={"owner_address": WALLET_ADDRESS, "jetton_master": USDT_MASTER_ADDRESS_RAW}, timeout=30)
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/wallets", params={"owner_address": WALLET_ADDRESS_RAW, "jetton_master": USDT_MASTER_ADDRESS_RAW}, timeout=30)
         for w in r.json().get("jetton_wallets", []):
             if str(w.get("jetton")) == USDT_MASTER_ADDRESS_RAW: return parse_integer(w.get("balance"))
         return 0
@@ -57,12 +57,12 @@ class TonCenterClient:
         return r.json().get("result", [])
 
     async def get_last_usdt_transaction(self):
-        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": WALLET_ADDRESS, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": 1}, timeout=30)
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": WALLET_ADDRESS_RAW, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": 1}, timeout=30)
         txs = r.json().get("jetton_transfers", [])
         return txs[0] if txs else None
 
     async def get_usdt_history(self, limit=5):
-        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": WALLET_ADDRESS, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": limit}, timeout=30)
+        r = await asyncio.to_thread(self.session.get, f"{TONCENTER_V3_API_URL}/jetton/transfers", params={"account": WALLET_ADDRESS_RAW, "jetton": USDT_MASTER_ADDRESS_RAW, "limit": limit}, timeout=30)
         return r.json().get("jetton_transfers", [])
 
 async def post_init(application: Application) -> None:
